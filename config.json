@@ -1,0 +1,20 @@
+{
+  "models": [
+    "openai/gpt-4o-mini",
+    "anthropic/claude-3.5-sonnet",
+    "google/gemini-2.0-flash-exp",
+    "xai/grok-2-1212"
+  ],
+  "judge_model": "openai/gpt-4o",
+  "per_model_timeout_ms": 20000,
+  "judge_timeout_ms": 25000,
+  "max_prompt_length": 8000,
+  "min_models_for_judge": 2,
+  "max_answer_length_for_judge": 5000,
+  "enable_early_judge": true,
+  "enable_debate": true,
+  "max_debate_rounds": 2,
+  "debate_timeout_ms": 10000,
+  "judge_feedback_timeout_ms": 8000
+}
+
