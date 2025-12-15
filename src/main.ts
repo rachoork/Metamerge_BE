@@ -38,7 +38,7 @@ async function bootstrap() {
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,
-      forbidNonWhitelisted: true,
+      forbidNonWhitelisted: true, // Re-enable strict validation
       transform: true,
       transformOptions: {
         enableImplicitConversion: true,
@@ -49,6 +49,24 @@ async function bootstrap() {
   const port = process.env.PORT || 3000;
   await app.listen(port);
   console.log(`MetaMerge Backend running on http://localhost:${port}`);
+
+  // Graceful shutdown
+  const shutdown = async (signal: string) => {
+    console.log(`${signal} received, shutting down gracefully...`);
+    try {
+      const deepResearchWorker = app.get('DeepResearchWorkerService');
+      if (deepResearchWorker && typeof deepResearchWorker.stopProcessing === 'function') {
+        deepResearchWorker.stopProcessing();
+      }
+    } catch (error) {
+      // Service might not be available, continue shutdown
+    }
+    await app.close();
+    process.exit(0);
+  };
+
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
 }
 
 bootstrap();

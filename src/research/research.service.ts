@@ -40,25 +40,49 @@ export class ResearchService {
   async performResearch(
     query: string,
     maxResults: number = 5,
+    jobId?: string,
   ): Promise<ResearchContext> {
-    this.logger.log(`Starting research for query: ${query}`);
+    const logPrefix = jobId ? `[${jobId}]` : '';
+    this.logger.log(`${logPrefix} Starting research for query: "${query}"`);
+    this.logger.log(`${logPrefix} Max results: ${maxResults}, Tavily API key: ${this.tavilyApiKey ? 'configured' : 'NOT configured'}`);
+
+    let toolUsed: 'tavily' | 'openrouter' | 'none' = 'none';
+    let toolError: string | null = null;
+    let results: ResearchResult[] = [];
 
     try {
-      let results: ResearchResult[] = [];
-
       // Try Tavily first if API key is available
       if (this.tavilyApiKey) {
-        results = await this.searchWithTavily(query, maxResults);
+        this.logger.log(`${logPrefix} Attempting Tavily search...`);
+        toolUsed = 'tavily';
+        results = await this.searchWithTavily(query, maxResults, jobId);
+        this.logger.log(`${logPrefix} Tavily search completed. Results: ${results.length}`);
       } else {
         // Fallback: Use OpenRouter's web search capability via a model
-        results = await this.searchWithOpenRouter(query, maxResults);
+        this.logger.warn(`${logPrefix} Tavily API key not configured. Attempting OpenRouter web search fallback...`);
+        toolUsed = 'openrouter';
+        results = await this.searchWithOpenRouter(query, maxResults, jobId);
+        this.logger.log(`${logPrefix} OpenRouter search completed. Results: ${results.length}`);
+      }
+
+      // Log research results
+      if (results.length === 0) {
+        this.logger.warn(`${logPrefix} No research results found for query: "${query}"`);
+        this.logger.warn(`${logPrefix} Tool used: ${toolUsed}, Error: ${toolError || 'none'}`);
+      } else {
+        this.logger.log(`${logPrefix} Research successful: Found ${results.length} sources`);
+        results.forEach((result, index) => {
+          this.logger.debug(`${logPrefix} Source ${index + 1}: ${result.title} (${result.url})`);
+        });
       }
 
       // Generate summary of research findings
       const summary = this.generateResearchSummary(query, results);
       
       // Extract citations
-      const citations = results.map((r) => r.url);
+      const citations = results.map((r) => r.url).filter((url) => url && url.length > 0);
+
+      this.logger.log(`${logPrefix} Research context created: ${results.length} results, ${citations.length} citations`);
 
       return {
         query,
@@ -67,12 +91,17 @@ export class ResearchService {
         citations,
       };
     } catch (error) {
-      this.logger.error(`Research failed: ${error.message}`);
-      // Return empty research context on failure
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      this.logger.error(`${logPrefix} Research failed with error: ${errorMessage}`);
+      this.logger.error(`${logPrefix} Stack: ${error instanceof Error ? error.stack : 'N/A'}`);
+      toolError = errorMessage;
+
+      // Return empty research context on failure, but log it clearly
+      this.logger.warn(`${logPrefix} Returning empty research context due to failure`);
       return {
         query,
         results: [],
-        summary: 'Research unavailable. Proceeding with model knowledge only.',
+        summary: `Research unavailable due to error: ${errorMessage}. Proceeding with model knowledge only.`,
         citations: [],
       };
     }
@@ -81,8 +110,14 @@ export class ResearchService {
   private async searchWithTavily(
     query: string,
     maxResults: number,
+    jobId?: string,
   ): Promise<ResearchResult[]> {
+    const logPrefix = jobId ? `[${jobId}]` : '';
+    const startTime = Date.now();
+    
     try {
+      this.logger.log(`${logPrefix} Calling Tavily API with query: "${query}" (maxResults: ${maxResults})`);
+      
       const response = await this.client.post(
         'https://api.tavily.com/search',
         {
@@ -97,33 +132,77 @@ export class ResearchService {
         },
       );
 
-      const results: ResearchResult[] = (response.data.results || []).map(
-        (result: any) => ({
-          title: result.title || 'Untitled',
-          url: result.url || '',
-          snippet: result.content || result.snippet || '',
-          source: this.extractDomain(result.url || ''),
-          relevanceScore: result.score || 0,
-        }),
-      );
+      const latency = Date.now() - startTime;
+      this.logger.log(`${logPrefix} Tavily API response received in ${latency}ms`);
 
+      // Check response structure
+      if (!response.data) {
+        this.logger.warn(`${logPrefix} Tavily returned empty response data`);
+        return [];
+      }
+
+      // Handle Tavily response format
+      const rawResults = response.data.results || [];
+      this.logger.log(`${logPrefix} Tavily returned ${rawResults.length} raw results`);
+
+      const results: ResearchResult[] = rawResults.map(
+        (result: any, index: number) => {
+          const mapped = {
+            title: result.title || 'Untitled',
+            url: result.url || '',
+            snippet: result.content || result.snippet || result.raw_content || '',
+            source: this.extractDomain(result.url || ''),
+            relevanceScore: result.score || 0,
+          };
+
+          // Validate result
+          if (!mapped.url || mapped.url.length === 0) {
+            this.logger.warn(`${logPrefix} Result ${index + 1} missing URL, skipping`);
+            return null;
+          }
+
+          return mapped;
+        },
+      ).filter((r: ResearchResult | null) => r !== null) as ResearchResult[];
+
+      this.logger.log(`${logPrefix} Tavily search successful: ${results.length} valid results`);
       return results;
     } catch (error) {
-      this.logger.warn(`Tavily search failed: ${error.message}`);
-      return [];
+      const latency = Date.now() - startTime;
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      
+      if (axios.isAxiosError(error)) {
+        if (error.response) {
+          this.logger.error(`${logPrefix} Tavily API error (${error.response.status}): ${JSON.stringify(error.response.data)}`);
+        } else if (error.request) {
+          this.logger.error(`${logPrefix} Tavily API network error: No response received`);
+        } else {
+          this.logger.error(`${logPrefix} Tavily API request error: ${errorMessage}`);
+        }
+      } else {
+        this.logger.error(`${logPrefix} Tavily search failed after ${latency}ms: ${errorMessage}`);
+      }
+      
+      throw error; // Re-throw to be handled by caller
     }
   }
 
   private async searchWithOpenRouter(
     query: string,
     maxResults: number,
+    jobId?: string,
   ): Promise<ResearchResult[]> {
+    const logPrefix = jobId ? `[${jobId}]` : '';
+    
     // Use a model with web search capability via OpenRouter
     // This is a fallback if Tavily is not available
     // Note: This requires models that support web search/tool use
     
-    // For now, return empty - can be enhanced with actual web search models
-    this.logger.warn('OpenRouter web search not yet implemented. Tavily API key recommended.');
+    this.logger.warn(`${logPrefix} OpenRouter web search not yet implemented. Tavily API key recommended.`);
+    this.logger.warn(`${logPrefix} Returning empty results - research will proceed without external sources`);
+    
+    // TODO: Implement OpenRouter web search using models with tool use capability
+    // For now, return empty array which will trigger "no research results" path
     return [];
   }
 
@@ -132,14 +211,21 @@ export class ResearchService {
     results: ResearchResult[],
   ): string {
     if (results.length === 0) {
-      return 'No research results found.';
+      return `No research results found for "${query}". This may indicate:
+1. The search service is unavailable or not configured
+2. No relevant sources were found for this query
+3. A temporary error occurred during the search
+
+Proceeding with model knowledge only.`;
     }
 
     let summary = `Research findings for "${query}":\n\n`;
     results.forEach((result, index) => {
-      summary += `${index + 1}. ${result.title}\n`;
-      summary += `   Source: ${result.source}\n`;
-      summary += `   ${result.snippet.substring(0, 200)}...\n\n`;
+      summary += `[Source ${index + 1}] ${result.title}\n`;
+      summary += `URL: ${result.url}\n`;
+      summary += `Source: ${result.source}\n`;
+      const snippet = result.snippet || '';
+      summary += `Content: ${snippet.substring(0, 300)}${snippet.length > 300 ? '...' : ''}\n\n`;
     });
 
     return summary;

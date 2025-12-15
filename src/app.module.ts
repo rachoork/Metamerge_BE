@@ -12,6 +12,9 @@ import { ImageGenerationService } from './image-generation/image-generation.serv
 import { ResearchService } from './research/research.service';
 import { DeepResearchService } from './research/deep-research.service';
 import { ConfigService } from './config/config.service';
+import { JobStoreService } from './jobs/job-store.service';
+import { DeepResearchWorkerService } from './jobs/deep-research-worker.service';
+import { DeepResearchJobController } from './jobs/deep-research-job.controller';
 
 @Module({
   imports: [
@@ -21,7 +24,7 @@ import { ConfigService } from './config/config.service';
     }),
     TerminusModule,
   ],
-  controllers: [MergeController, HealthController],
+  controllers: [MergeController, HealthController, DeepResearchJobController],
   providers: [
     MergeService,
     OpenRouterService,
@@ -32,6 +35,8 @@ import { ConfigService } from './config/config.service';
     ResearchService,
     DeepResearchService,
     ConfigService,
+    JobStoreService,
+    DeepResearchWorkerService,
   ],
   exports: [ConfigService], // Export for use in other modules
 })

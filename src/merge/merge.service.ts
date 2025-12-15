@@ -12,6 +12,8 @@ import { QueryModelDto, JudgeModelDto } from './dto/merge-request.dto';
 import { ImageGenerationService } from '../image-generation/image-generation.service';
 import { DeepResearchService } from '../research/deep-research.service';
 import { ConfigService } from '../config/config.service';
+import { ImageGenerationRequestDto } from './dto/image-generation-request.dto';
+import { ImageGenerationResponseDto, ImageResult } from './dto/image-generation-response.dto';
 import { v4 as uuidv4 } from 'uuid';
 import * as crypto from 'crypto';
 
@@ -235,7 +237,7 @@ export class MergeService {
           return result;
         } catch (error) {
           const errorResult: ModelCallResult = {
-            model: this.models[index],
+            model: modelsToUse[index], // Use user-selected models, not default models
             answer: null,
             latency_ms: 0,
             success: false,
@@ -475,12 +477,17 @@ export class MergeService {
 
   async query(
     prompt: string,
-    mode: 'comprehensive' | 'concise' | 'technical' | 'creative' | 'general' | 'image-generation' | 'deep-research' | undefined,
+    mode: 'comprehensive' | 'concise' | 'technical' | 'creative' | 'general' | 'query' | 'image-generation' | 'deep-research' | undefined,
     queryModels: QueryModelDto[],
     judgeModel: JudgeModelDto,
   ): Promise<MergeResponseDto> {
     const requestId = uuidv4();
     const overallStartTime = Date.now();
+
+    // Normalize "query" mode to "general"
+    if (mode === 'query') {
+      mode = 'general';
+    }
 
     // Handle deep research mode
     if (mode === 'deep-research') {
@@ -524,48 +531,32 @@ export class MergeService {
       };
     }
 
-    // Handle image generation mode
+    // Handle image generation mode - reuse the dedicated method
     if (mode === 'image-generation') {
-      this.logger.log(`[${requestId}] Processing image generation request`);
+      this.logger.log(`[${requestId}] Processing image generation request via query endpoint`);
       
-      const modelIds = queryModels.map((m) => m.id);
-      const modelMap = new Map(
-        queryModels.map((m) => [m.id, { name: m.name, provider: m.provider }]),
-      );
-
-      // Generate images from all models in parallel
-      const imageResults = await this.imageGenerationService.generateImagesFromMultipleModels(
+      const imageResponse = await this.generateImages(
         prompt,
-        modelIds,
-        this.perModelTimeoutMs,
+        queryModels,
+        undefined, // size - use default
+        'url', // responseFormat - default to URL
       );
 
-      // Transform to response format
-      const modelResults: ModelResult[] = imageResults.map((result) => {
-        const modelInfo = modelMap.get(result.model);
-        return {
-          modelName: modelInfo?.name || result.model,
-          modelId: result.model,
-          provider: modelInfo?.provider || 'Unknown',
-          status: result.success ? 'success' : 'failed',
-          latency: result.latency_ms / 1000,
-          imageUrl: result.imageUrl,
-          ...(result.error && { errorMessage: result.error }),
-        };
-      });
-
-      // Select best image (first successful one, or use judge to pick best)
-      const successfulImages = imageResults.filter((r) => r.success);
-      const mergedImageUrl = successfulImages.length > 0 
-        ? successfulImages[0].imageUrl 
-        : null;
-
-      const totalLatency = Date.now() - overallStartTime;
+      // Transform ImageGenerationResponseDto to MergeResponseDto format
+      const modelResults: ModelResult[] = imageResponse.imageResults.map((result) => ({
+        modelName: result.modelName,
+        modelId: result.modelId,
+        provider: result.provider,
+        status: result.status,
+        latency: result.latency,
+        imageUrl: result.imageUrl,
+        ...(result.errorMessage && { errorMessage: result.errorMessage }),
+      }));
 
       return {
-        mergedImageUrl: mergedImageUrl || undefined,
+        mergedImageUrl: imageResponse.mergedImageUrl,
         modelResults,
-        totalLatency: totalLatency / 1000,
+        totalLatency: imageResponse.totalLatency,
         mode: 'image',
       };
     }
@@ -627,6 +618,81 @@ export class MergeService {
       totalLatency: internalResult.meta.total_latency_ms / 1000, // Convert ms to seconds
       judgeModelUsed: judgeModelName,
       mode: 'text',
+    };
+  }
+
+  async generateImages(
+    prompt: string,
+    imageModels: Array<{ id: string; name: string; provider: string }>,
+    size?: string,
+    responseFormat?: 'url' | 'b64_json',
+  ): Promise<ImageGenerationResponseDto> {
+    const requestId = uuidv4();
+    const overallStartTime = Date.now();
+
+    this.logger.log(`[${requestId}] Processing image generation request - models: ${imageModels.length}`);
+
+    // Validate image models
+    if (!imageModels || imageModels.length === 0) {
+      throw new HttpException(
+        'At least one image model must be specified',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    const modelIds = imageModels.map((m) => m.id);
+    const modelMap = new Map(
+      imageModels.map((m) => [m.id, { name: m.name, provider: m.provider }]),
+    );
+
+    // Generate images from all models in parallel
+    const imageResults = await this.imageGenerationService.generateImagesFromMultipleModels(
+      prompt,
+      modelIds,
+      this.perModelTimeoutMs,
+    );
+
+    // Transform to response format
+    const imageResultsFormatted: ImageResult[] = imageResults.map((result) => {
+      const modelInfo = modelMap.get(result.model);
+      const baseResult: ImageResult = {
+        modelName: modelInfo?.name || result.model,
+        modelId: result.model,
+        provider: modelInfo?.provider || 'Unknown',
+        status: result.success ? 'success' : 'failed',
+        latency: result.latency_ms / 1000,
+        ...(result.error && { errorMessage: result.error }),
+      };
+
+      // Add image URL or base64 based on result
+      if (result.success && result.imageUrl) {
+        if (responseFormat === 'b64_json' && result.imageUrl.startsWith('data:')) {
+          baseResult.imageBase64 = result.imageUrl;
+        } else {
+          baseResult.imageUrl = result.imageUrl;
+        }
+      }
+
+      return baseResult;
+    });
+
+    // Select best image (first successful one)
+    const successfulImages = imageResults.filter((r) => r.success);
+    const mergedImageUrl = successfulImages.length > 0
+      ? successfulImages[0].imageUrl
+      : undefined;
+    const mergedImageBase64 = responseFormat === 'b64_json' && mergedImageUrl?.startsWith('data:')
+      ? mergedImageUrl
+      : undefined;
+
+    const totalLatency = Date.now() - overallStartTime;
+
+    return {
+      mergedImageUrl: mergedImageUrl && !mergedImageBase64 ? mergedImageUrl : undefined,
+      mergedImageBase64,
+      imageResults: imageResultsFormatted,
+      totalLatency: totalLatency / 1000,
+      mode: 'image',
     };
   }
 }

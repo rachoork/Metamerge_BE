@@ -147,6 +147,11 @@ Your output should be a polished, professional response that demonstrates superi
     const judgeModelToUse = customJudgeModel || this.judgeModel;
 
     try {
+      // Use extended timeout for research mode (research context can be large)
+      const timeoutMs = isResearchMode 
+        ? Math.max(this.judgeTimeoutMs, 45000) // At least 45s for research
+        : this.judgeTimeoutMs;
+      
       // Use a higher quality call for judge with better parameters
       const result = await this.openRouterService.callModelWithRetry(
         judgeModelToUse,
@@ -154,7 +159,7 @@ Your output should be a polished, professional response that demonstrates superi
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userMessage },
         ],
-        this.judgeTimeoutMs,
+        timeoutMs,
         0, // No retries for judge
         {
           temperature: 0.3, // Lower temperature for more focused, quality responses

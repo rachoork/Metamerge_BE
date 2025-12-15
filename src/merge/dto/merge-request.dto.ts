@@ -47,8 +47,8 @@ export class MergeRequestDto {
 
   @IsString()
   @IsOptional()
-  @IsIn(['comprehensive', 'concise', 'technical', 'creative', 'general', 'image-generation', 'deep-research'])
-  mode?: 'comprehensive' | 'concise' | 'technical' | 'creative' | 'general' | 'image-generation' | 'deep-research';
+  @IsIn(['comprehensive', 'concise', 'technical', 'creative', 'general', 'query', 'image-generation', 'deep-research'])
+  mode?: 'comprehensive' | 'concise' | 'technical' | 'creative' | 'general' | 'query' | 'image-generation' | 'deep-research';
 
   @IsArray()
   @ValidateNested({ each: true })
